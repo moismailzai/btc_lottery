@@ -1,4 +1,3 @@
 .idea/
-blockchair_bitcoin_addresses_and_balance_LATEST.tsv
-persist/
-!persist/.gitkeep
+persist/blockchair_bitcoin_addresses_and_balance_LATEST.tsv
+persist/postgresql
