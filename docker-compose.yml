@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:latest
+    environment:
+      POSTGRES_DB: btc
+      POSTGRES_USER: btc
+      POSTGRES_PASSWORD: btc
+      POSTGRES_INITDB_ARGS: "-c max_connections=1000 -c shared_buffers=2GB"
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./persist/blockchair_bitcoin_addresses_and_balance_LATEST.tsv:/blockchair_bitcoin_addresses_and_balance_LATEST.tsv
+      - ./persist/initdb:/docker-entrypoint-initdb.d
+      - ./persist/postgresql:/var/lib/postgresql/data
