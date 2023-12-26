@@ -69,6 +69,10 @@ published by https://blockchair.com/dumps.
     ```shell
     btc_lottery -v
     ```
+6. Once you've verified everything is working as expected, run the application without the verbose flag and enable Pushover notifications so you can be notified when you win the Bitcoin lottery (it's not going to happen):
+    ```shell
+    btc_lottery -pt $PUSHOVER_APPLICATION_TOKEN -pu $PUSHOVER_USER_KEY
+    ```
 
 # Building from source
 
