@@ -58,6 +58,50 @@ func TestBIP44Derivation(t *testing.T) {
 	t.Logf("BIP44 P2PKH address: %s", p2pkhAddr.EncodeAddress())
 }
 
+func TestBIP49Derivation(t *testing.T) {
+	// Known test mnemonic
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+	seed := bip39.NewSeed(mnemonic, "")
+	masterKey, err := bip32.NewMasterKey(seed)
+	if err != nil {
+		t.Fatalf("Failed to create master key: %v", err)
+	}
+
+	// Derive BIP49 path: m/49'/0'/0'/0/0
+	childKey, err := deriveChildKey(masterKey, 49, 0)
+	if err != nil {
+		t.Fatalf("Failed to derive child key: %v", err)
+	}
+
+	privKey, _ := btcec.PrivKeyFromBytes(childKey.Key)
+	wif, err := btcutil.NewWIF(privKey, &chaincfg.MainNetParams, true)
+	if err != nil {
+		t.Fatalf("Failed to create WIF: %v", err)
+	}
+
+	pubKeyBytes := wif.SerializePubKey()
+	pubKeyHash := btcutil.Hash160(pubKeyBytes)
+
+	// Create witness program: OP_0 <20-byte-pubkey-hash>
+	witnessProgram := append([]byte{0x00, 0x14}, pubKeyHash...)
+	scriptHash := btcutil.Hash160(witnessProgram)
+
+	p2shAddr, err := btcutil.NewAddressScriptHashFromHash(scriptHash, &chaincfg.MainNetParams)
+	if err != nil {
+		t.Fatalf("Failed to create P2SH address: %v", err)
+	}
+
+	// Expected address for "abandon..." mnemonic at m/49'/0'/0'/0/0
+	// This is a well-known BIP49 test vector
+	expectedP2SH := "37VucYSaXLCAsxYyAPfbSi9eh4iEcbShgf"
+	if p2shAddr.EncodeAddress() != expectedP2SH {
+		t.Errorf("P2SH-P2WPKH address mismatch:\n  got:      %s\n  expected: %s", p2shAddr.EncodeAddress(), expectedP2SH)
+	}
+
+	t.Logf("BIP49 P2SH-P2WPKH address: %s", p2shAddr.EncodeAddress())
+}
+
 func TestBIP84Derivation(t *testing.T) {
 	// Known test mnemonic
 	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
@@ -150,16 +194,18 @@ func TestMultipleIndexDerivation(t *testing.T) {
 }
 
 func TestGenerateAddressesFromMnemonic(t *testing.T) {
-	// Set addressIndexes for testing
+	// Set test parameters
 	testIndexes := 3
+	testEntropy := 128
 	addressIndexes = &testIndexes
+	entropyBits = &testEntropy
 
 	addresses, err := generateAddressesFromMnemonic()
 	if err != nil {
 		t.Fatalf("Failed to generate addresses: %v", err)
 	}
 
-	expectedCount := 2 * testIndexes // 2 types * indexes
+	expectedCount := 3 * testIndexes // 3 types (P2PKH, P2SH-P2WPKH, P2WPKH) * indexes
 	if len(addresses) != expectedCount {
 		t.Errorf("Expected %d addresses, got %d", expectedCount, len(addresses))
 	}
@@ -173,11 +219,15 @@ func TestGenerateAddressesFromMnemonic(t *testing.T) {
 		seen[addr.address] = true
 
 		// Verify address format
-		if addr.addrType[:5] == "p2pkh" {
+		if len(addr.addrType) >= 5 && addr.addrType[:5] == "p2pkh" {
 			if addr.address[0] != '1' {
 				t.Errorf("P2PKH address should start with '1': %s", addr.address)
 			}
-		} else if addr.addrType[:6] == "p2wpkh" {
+		} else if len(addr.addrType) >= 11 && addr.addrType[:11] == "p2sh-p2wpkh" {
+			if addr.address[0] != '3' {
+				t.Errorf("P2SH-P2WPKH address should start with '3': %s", addr.address)
+			}
+		} else if len(addr.addrType) >= 6 && addr.addrType[:6] == "p2wpkh" {
 			if addr.address[:4] != "bc1q" {
 				t.Errorf("P2WPKH address should start with 'bc1q': %s", addr.address)
 			}
@@ -191,6 +241,39 @@ func TestGenerateAddressesFromMnemonic(t *testing.T) {
 	}
 
 	t.Logf("Generated %d addresses from random mnemonic", len(addresses))
+}
+
+func TestGenerate24WordMnemonic(t *testing.T) {
+	// Set test parameters for 24-word mnemonic
+	testIndexes := 2
+	testEntropy := 256 // 256 bits = 24 words
+	addressIndexes = &testIndexes
+	entropyBits = &testEntropy
+
+	addresses, err := generateAddressesFromMnemonic()
+	if err != nil {
+		t.Fatalf("Failed to generate addresses: %v", err)
+	}
+
+	expectedCount := 3 * testIndexes // 3 types * indexes
+	if len(addresses) != expectedCount {
+		t.Errorf("Expected %d addresses, got %d", expectedCount, len(addresses))
+	}
+
+	// Verify mnemonic is 24 words
+	if len(addresses) > 0 {
+		words := len(splitMnemonic(addresses[0].mnemonic))
+		if words != 24 {
+			t.Errorf("Expected 24-word mnemonic, got %d words", words)
+		}
+		t.Logf("Generated 24-word mnemonic: %s...", addresses[0].mnemonic[:50])
+	}
+
+	// Reset to 12-word default
+	defaultEntropy := 128
+	entropyBits = &defaultEntropy
+
+	t.Logf("Generated %d addresses from 24-word mnemonic", len(addresses))
 }
 
 func splitMnemonic(mnemonic string) []string {

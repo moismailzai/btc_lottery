@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Go application that generates random Bitcoin wallets (from 12-word BIP39 mnemonics) and checks if they match any existing funded addresses stored in a PostgreSQL database. It's an educational demonstration of the practical impossibility of guessing Bitcoin private keys.
+This is a Go application that generates random Bitcoin wallets (from 12 or 24-word BIP39 mnemonics) and checks if they match any existing funded addresses stored in a PostgreSQL database. It's an educational demonstration of the practical impossibility of guessing Bitcoin private keys.
 
 ## Build Commands
 
@@ -45,10 +45,11 @@ Single-file Go application (`btc_lottery.go`) with concurrent worker pattern:
 - **Database**: PostgreSQL stores known Bitcoin addresses (`btc_addresses`) and any matches found (`wallets`)
 
 Key flow:
-1. Generate 128-bit entropy → 12-word BIP39 mnemonic
+1. Generate entropy → BIP39 mnemonic (128-bit/12-word default, or 256-bit/24-word with `-e 256`)
 2. Derive master key using correct BIP paths:
    - BIP44 (`m/44'/0'/0'/0/index`) for P2PKH (legacy "1...") addresses
-   - BIP84 (`m/84'/0'/0'/0/index`) for P2WPKH (segwit "bc1q...") addresses
+   - BIP49 (`m/49'/0'/0'/0/index`) for P2SH-P2WPKH (wrapped segwit "3...") addresses
+   - BIP84 (`m/84'/0'/0'/0/index`) for P2WPKH (native segwit "bc1q...") addresses
 3. Generate addresses for multiple indexes (default 0-19, configurable with `-i`)
 4. Check addresses against Bloom filter first (fast rejection)
 5. Only query database for Bloom filter positives (rare)
@@ -63,4 +64,4 @@ Defined in `persist/initdb/init.psql.sql`:
 
 ## CLI Flags
 
-Key flags: `-w` (workers), `-b` (batch size), `-i` (address indexes per mnemonic), `-v` (verbose), `-db` (connection string), `-pt`/`-pu` (Pushover tokens)
+Key flags: `-w` (workers), `-b` (batch size), `-i` (address indexes per mnemonic), `-e` (entropy bits: 128 or 256), `-v` (verbose), `-db` (connection string), `-pt`/`-pu` (Pushover tokens)

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -34,6 +35,7 @@ var (
 	batchSize             = flag.Int("b", 1000, "Batch size for checking addresses in DB")
 	workers               = flag.Int("w", 50, "Number of concurrent workers to generate wallets")
 	addressIndexes        = flag.Int("i", 20, "Number of address indexes to check per mnemonic (0-n)")
+	entropyBits           = flag.Int("e", 128, "Entropy bits: 128 for 12-word, 256 for 24-word mnemonics")
 	// use these flags for debugging only since they'll dramatically reduce performance
 	recordAllWallets = flag.Bool("a", false, "Record all wallets in the database, irrespective of matches")
 	recordMisses     = flag.Bool("m", false, "Record addresses that don't match in the misses table")
@@ -62,6 +64,21 @@ func logVerbose(verbose bool, format string, args ...interface{}) {
 	if verbose {
 		log.Printf(format, args...)
 	}
+}
+
+// itoa is a fast uint32 to string conversion (faster than fmt.Sprintf or strconv for small numbers)
+func itoa(n uint32) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [10]byte // max uint32 is 10 digits
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
 
 func sendPushoverNotification(token, user, title, message string) error {
@@ -126,12 +143,12 @@ func deriveChildKey(masterKey *bip32.Key, purpose uint32, addressIndex uint32) (
 	return addressKey, nil
 }
 
-// generateAddressesFromMnemonic generates both P2PKH and P2WPKH addresses from a mnemonic
-// using compressed public keys and standard BIP44/84 derivation paths
+// generateAddressesFromMnemonic generates P2PKH, P2SH-P2WPKH, and P2WPKH addresses from a mnemonic
+// using compressed public keys and standard BIP44/49/84 derivation paths
 // Generates multiple address indexes (0 to addressIndexes-1) for each type
 func generateAddressesFromMnemonic() ([]addressInfo, error) {
-	// Generate a 12-word mnemonic (128 bits of entropy)
-	entropy, err := bip39.NewEntropy(128)
+	// Generate mnemonic: 128 bits = 12 words, 256 bits = 24 words
+	entropy, err := bip39.NewEntropy(*entropyBits)
 	if err != nil {
 		return nil, fmt.Errorf("generating entropy: %w", err)
 	}
@@ -150,8 +167,8 @@ func generateAddressesFromMnemonic() ([]addressInfo, error) {
 		return nil, fmt.Errorf("creating master key: %w", err)
 	}
 
-	// Pre-allocate for 2 address types × addressIndexes
-	addresses := make([]addressInfo, 0, 2*(*addressIndexes))
+	// Pre-allocate for 3 address types × addressIndexes
+	addresses := make([]addressInfo, 0, 3*(*addressIndexes))
 
 	// Generate addresses for each index
 	for idx := uint32(0); idx < uint32(*addressIndexes); idx++ {
@@ -178,9 +195,42 @@ func generateAddressesFromMnemonic() ([]addressInfo, error) {
 		addresses = append(addresses, addressInfo{
 			address:    p2pkhAddr.EncodeAddress(),
 			privateKey: wif.String(),
-			publicKey:  fmt.Sprintf("%x", pubKeyBytes),
+			publicKey:  hex.EncodeToString(pubKeyBytes),
 			mnemonic:   mnemonic,
-			addrType:   fmt.Sprintf("p2pkh/%d", idx),
+			addrType:   "p2pkh/" + itoa(idx),
+		})
+
+		// BIP49 path (m/49'/0'/0'/0/idx) for P2SH-P2WPKH addresses (wrapped SegWit, "3..." addresses)
+		p2shChildKey, err := deriveChildKey(masterKey, 49, idx)
+		if err != nil {
+			return nil, fmt.Errorf("deriving BIP49 child key at index %d: %w", idx, err)
+		}
+
+		privKey49, _ := btcec.PrivKeyFromBytes(p2shChildKey.Key)
+		wif49, err := btcutil.NewWIF(privKey49, &chaincfg.MainNetParams, true)
+		if err != nil {
+			return nil, fmt.Errorf("creating WIF for BIP49: %w", err)
+		}
+
+		pubKeyBytes49 := wif49.SerializePubKey()
+		pubKeyHash49 := btcutil.Hash160(pubKeyBytes49)
+
+		// Create witness program: OP_0 <20-byte-pubkey-hash>
+		witnessProgram := append([]byte{0x00, 0x14}, pubKeyHash49...)
+		// Hash the witness program to get the P2SH redeem script hash
+		scriptHash := btcutil.Hash160(witnessProgram)
+
+		p2shAddr, err := btcutil.NewAddressScriptHashFromHash(scriptHash, &chaincfg.MainNetParams)
+		if err != nil {
+			return nil, fmt.Errorf("creating P2SH-P2WPKH address: %w", err)
+		}
+
+		addresses = append(addresses, addressInfo{
+			address:    p2shAddr.EncodeAddress(),
+			privateKey: wif49.String(),
+			publicKey:  hex.EncodeToString(pubKeyBytes49),
+			mnemonic:   mnemonic,
+			addrType:   "p2sh-p2wpkh/" + itoa(idx),
 		})
 
 		// BIP84 path (m/84'/0'/0'/0/idx) for P2WPKH addresses
@@ -206,9 +256,9 @@ func generateAddressesFromMnemonic() ([]addressInfo, error) {
 		addresses = append(addresses, addressInfo{
 			address:    p2wpkhAddr.EncodeAddress(),
 			privateKey: wif84.String(),
-			publicKey:  fmt.Sprintf("%x", pubKeyBytes84),
+			publicKey:  hex.EncodeToString(pubKeyBytes84),
 			mnemonic:   mnemonic,
-			addrType:   fmt.Sprintf("p2wpkh/%d", idx),
+			addrType:   "p2wpkh/" + itoa(idx),
 		})
 	}
 
@@ -349,11 +399,13 @@ func logMatch(data addressInfo) {
 	file.Close()
 	matchesFileMutex.Unlock()
 
-	// Send push notification for matches
+	// Send push notification for matches (async to not block worker)
 	if *pushoverNotifications && *pushoverToken != "" && *pushoverUser != "" {
-		if err := sendPushoverNotification(*pushoverToken, *pushoverUser, "BTC LOTTERY MATCH!", msg); err != nil {
-			log.Printf("Error sending match notification: %v", err)
-		}
+		go func(title, message string) {
+			if err := sendPushoverNotification(*pushoverToken, *pushoverUser, title, message); err != nil {
+				log.Printf("Error sending match notification: %v", err)
+			}
+		}("BTC LOTTERY MATCH!", msg)
 	}
 }
 
@@ -371,9 +423,11 @@ func updateCounter(count int) {
 		log.Println(counterMessage)
 
 		if *pushoverNotifications && *pushoverToken != "" && *pushoverUser != "" {
-			if err := sendPushoverNotification(*pushoverToken, *pushoverUser, "Wallet Generation Update", counterMessage); err != nil {
-				log.Printf("Error sending notification: %v", err)
-			}
+			go func(message string) {
+				if err := sendPushoverNotification(*pushoverToken, *pushoverUser, "Wallet Generation Update", message); err != nil {
+					log.Printf("Error sending notification: %v", err)
+				}
+			}(counterMessage)
 		}
 	}
 }
@@ -512,8 +566,14 @@ func initBloomFilter(db *sql.DB, count int64) error {
 func main() {
 	flag.Parse()
 
+	// Validate entropy bits
+	if *entropyBits != 128 && *entropyBits != 256 {
+		log.Fatal("Entropy bits must be 128 (12 words) or 256 (24 words)")
+	}
+	mnemonicWords := *entropyBits / 32 * 3 // 128->12, 256->24
+
 	log.Println("Starting BTC Lottery...")
-	log.Printf("Workers: %d, Batch size: %d, Address indexes: %d", *workers, *batchSize, *addressIndexes)
+	log.Printf("Workers: %d, Batch size: %d, Address indexes: %d, Mnemonic: %d words", *workers, *batchSize, *addressIndexes, mnemonicWords)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
