@@ -19,8 +19,10 @@ import (
 
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/lib/pq"
 	"github.com/tyler-smith/go-bip32"
 	"github.com/tyler-smith/go-bip39"
@@ -167,8 +169,8 @@ func generateAddressesFromMnemonic() ([]addressInfo, error) {
 		return nil, fmt.Errorf("creating master key: %w", err)
 	}
 
-	// Pre-allocate for 3 address types × addressIndexes
-	addresses := make([]addressInfo, 0, 3*(*addressIndexes))
+	// Pre-allocate for 4 address types × addressIndexes (P2PKH, P2SH-P2WPKH, P2WPKH, P2TR)
+	addresses := make([]addressInfo, 0, 4*(*addressIndexes))
 
 	// Generate addresses for each index
 	for idx := uint32(0); idx < uint32(*addressIndexes); idx++ {
@@ -259,6 +261,37 @@ func generateAddressesFromMnemonic() ([]addressInfo, error) {
 			publicKey:  hex.EncodeToString(pubKeyBytes84),
 			mnemonic:   mnemonic,
 			addrType:   "p2wpkh/" + itoa(idx),
+		})
+
+		// BIP86 path (m/86'/0'/0'/0/idx) for P2TR addresses (Taproot, "bc1p..." addresses)
+		p2trChildKey, err := deriveChildKey(masterKey, 86, idx)
+		if err != nil {
+			return nil, fmt.Errorf("deriving BIP86 child key at index %d: %w", idx, err)
+		}
+
+		privKey86, _ := btcec.PrivKeyFromBytes(p2trChildKey.Key)
+		wif86, err := btcutil.NewWIF(privKey86, &chaincfg.MainNetParams, true)
+		if err != nil {
+			return nil, fmt.Errorf("creating WIF for BIP86: %w", err)
+		}
+
+		// For Taproot, we need the internal public key and then compute the tweaked output key
+		internalPubKey := privKey86.PubKey()
+
+		// Compute the tweaked output key (no script path, key-path only spend)
+		taprootKey := txscript.ComputeTaprootKeyNoScript(internalPubKey)
+
+		p2trAddr, err := btcutil.NewAddressTaproot(schnorr.SerializePubKey(taprootKey), &chaincfg.MainNetParams)
+		if err != nil {
+			return nil, fmt.Errorf("creating P2TR address: %w", err)
+		}
+
+		addresses = append(addresses, addressInfo{
+			address:    p2trAddr.EncodeAddress(),
+			privateKey: wif86.String(),
+			publicKey:  hex.EncodeToString(schnorr.SerializePubKey(internalPubKey)),
+			mnemonic:   mnemonic,
+			addrType:   "p2tr/" + itoa(idx),
 		})
 	}
 

@@ -5,8 +5,10 @@ import (
 
 	"github.com/bits-and-blooms/bloom/v3"
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	"github.com/btcsuite/btcd/btcutil"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
 	"github.com/tyler-smith/go-bip32"
 	"github.com/tyler-smith/go-bip39"
 )
@@ -142,6 +144,45 @@ func TestBIP84Derivation(t *testing.T) {
 	t.Logf("BIP84 P2WPKH address: %s", p2wpkhAddr.EncodeAddress())
 }
 
+func TestBIP86Derivation(t *testing.T) {
+	// Known test mnemonic
+	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+	seed := bip39.NewSeed(mnemonic, "")
+	masterKey, err := bip32.NewMasterKey(seed)
+	if err != nil {
+		t.Fatalf("Failed to create master key: %v", err)
+	}
+
+	// Derive BIP86 path: m/86'/0'/0'/0/0
+	childKey, err := deriveChildKey(masterKey, 86, 0)
+	if err != nil {
+		t.Fatalf("Failed to derive child key: %v", err)
+	}
+
+	privKey, _ := btcec.PrivKeyFromBytes(childKey.Key)
+
+	// Get the internal public key
+	internalPubKey := privKey.PubKey()
+
+	// Compute the tweaked output key (key-path only, no script)
+	taprootKey := txscript.ComputeTaprootKeyNoScript(internalPubKey)
+
+	p2trAddr, err := btcutil.NewAddressTaproot(schnorr.SerializePubKey(taprootKey), &chaincfg.MainNetParams)
+	if err != nil {
+		t.Fatalf("Failed to create P2TR address: %v", err)
+	}
+
+	// Expected address for "abandon..." mnemonic at m/86'/0'/0'/0/0
+	// This is a well-known BIP86 test vector
+	expectedP2TR := "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"
+	if p2trAddr.EncodeAddress() != expectedP2TR {
+		t.Errorf("P2TR address mismatch:\n  got:      %s\n  expected: %s", p2trAddr.EncodeAddress(), expectedP2TR)
+	}
+
+	t.Logf("BIP86 P2TR address: %s", p2trAddr.EncodeAddress())
+}
+
 func TestMultipleIndexDerivation(t *testing.T) {
 	mnemonic := "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
@@ -185,11 +226,26 @@ func TestMultipleIndexDerivation(t *testing.T) {
 		}
 		addresses[p2wpkhAddr.EncodeAddress()] = true
 
-		t.Logf("Index %d: P2PKH=%s P2WPKH=%s", idx, p2pkhAddr.EncodeAddress(), p2wpkhAddr.EncodeAddress())
+		// BIP86
+		childKey86, err := deriveChildKey(masterKey, 86, idx)
+		if err != nil {
+			t.Fatalf("Failed to derive BIP86 child key at index %d: %v", idx, err)
+		}
+		privKey86, _ := btcec.PrivKeyFromBytes(childKey86.Key)
+		internalPubKey := privKey86.PubKey()
+		taprootKey := txscript.ComputeTaprootKeyNoScript(internalPubKey)
+		p2trAddr, _ := btcutil.NewAddressTaproot(schnorr.SerializePubKey(taprootKey), &chaincfg.MainNetParams)
+
+		if addresses[p2trAddr.EncodeAddress()] {
+			t.Errorf("Duplicate P2TR address at index %d", idx)
+		}
+		addresses[p2trAddr.EncodeAddress()] = true
+
+		t.Logf("Index %d: P2PKH=%s P2WPKH=%s P2TR=%s", idx, p2pkhAddr.EncodeAddress(), p2wpkhAddr.EncodeAddress(), p2trAddr.EncodeAddress())
 	}
 
-	if len(addresses) != 10 {
-		t.Errorf("Expected 10 unique addresses, got %d", len(addresses))
+	if len(addresses) != 15 {
+		t.Errorf("Expected 15 unique addresses, got %d", len(addresses))
 	}
 }
 
@@ -205,7 +261,7 @@ func TestGenerateAddressesFromMnemonic(t *testing.T) {
 		t.Fatalf("Failed to generate addresses: %v", err)
 	}
 
-	expectedCount := 3 * testIndexes // 3 types (P2PKH, P2SH-P2WPKH, P2WPKH) * indexes
+	expectedCount := 4 * testIndexes // 4 types (P2PKH, P2SH-P2WPKH, P2WPKH, P2TR) * indexes
 	if len(addresses) != expectedCount {
 		t.Errorf("Expected %d addresses, got %d", expectedCount, len(addresses))
 	}
@@ -231,6 +287,10 @@ func TestGenerateAddressesFromMnemonic(t *testing.T) {
 			if addr.address[:4] != "bc1q" {
 				t.Errorf("P2WPKH address should start with 'bc1q': %s", addr.address)
 			}
+		} else if len(addr.addrType) >= 4 && addr.addrType[:4] == "p2tr" {
+			if addr.address[:4] != "bc1p" {
+				t.Errorf("P2TR address should start with 'bc1p': %s", addr.address)
+			}
 		}
 
 		// Verify mnemonic is 12 words
@@ -255,7 +315,7 @@ func TestGenerate24WordMnemonic(t *testing.T) {
 		t.Fatalf("Failed to generate addresses: %v", err)
 	}
 
-	expectedCount := 3 * testIndexes // 3 types * indexes
+	expectedCount := 4 * testIndexes // 4 types * indexes
 	if len(addresses) != expectedCount {
 		t.Errorf("Expected %d addresses, got %d", expectedCount, len(addresses))
 	}
