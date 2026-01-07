@@ -79,18 +79,13 @@ published by https://blockchair.com/dumps.
 First, install dependencies:
 
 ```shell
-go get github.com/btcsuite/btcd/btcec
-go get github.com/btcsuite/btcd/chaincfg
-go get github.com/btcsuite/btcutil
-go get github.com/tyler-smith/go-bip39
-go get github.com/tyler-smith/go-bip32
-go get github.com/lib/pq
+go mod download
 ```
 
 Then, make an optimized build:
 
 ```shell
-GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" btc_wallet_clash.go
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o build/btc_lottery btc_lottery.go
 ```
 
 # Sourcing the data

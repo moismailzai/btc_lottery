@@ -1,49 +1,29 @@
 -- Create btc_addresses table if it doesn't exist
--- PRIMARY KEY already creates an implicit index, so no separate index needed
+-- PRIMARY KEY already creates an implicit B-tree index
 CREATE TABLE IF NOT EXISTS btc_addresses
 (
     address TEXT PRIMARY KEY,
     balance BIGINT
 );
 
--- Create other tables
+-- Wallets table stores any matches found
 CREATE TABLE IF NOT EXISTS wallets
 (
     address     TEXT PRIMARY KEY,
-    mnemonic    TEXT,
-    private_key TEXT,
-    public_key  TEXT
+    mnemonic    TEXT NOT NULL,
+    private_key TEXT NOT NULL,
+    public_key  TEXT NOT NULL,
+    addr_type   TEXT,
+    found_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS matches
-(
-    address TEXT PRIMARY KEY
-);
-
+-- Misses table for debugging (optional, disabled by default)
 CREATE TABLE IF NOT EXISTS misses
 (
     address TEXT PRIMARY KEY
 );
 
--- Only create indexes on non-primary key columns that we search on
--- Note: PRIMARY KEY columns already have implicit indexes, so we don't duplicate those
-DO
-$$
-    BEGIN
-        -- Index on private_key for wallets (if we need to look up by private key)
-        IF NOT EXISTS (SELECT 1
-                       FROM pg_indexes
-                       WHERE tablename = 'wallets'
-                         AND indexname = 'idx_wallets_private_key') THEN
-            CREATE INDEX idx_wallets_private_key ON wallets (private_key);
-        END IF;
-
-        -- Index on public_key for wallets (if we need to look up by public key)
-        IF NOT EXISTS (SELECT 1
-                       FROM pg_indexes
-                       WHERE tablename = 'wallets'
-                         AND indexname = 'idx_wallets_public_key') THEN
-            CREATE INDEX idx_wallets_public_key ON wallets (public_key);
-        END IF;
-    END
-$$;
+-- Note: No additional indexes needed
+-- - btc_addresses.address: PRIMARY KEY provides B-tree index for lookups
+-- - wallets.address: PRIMARY KEY provides B-tree index
+-- - We never query wallets by private_key or public_key, so no indexes there
