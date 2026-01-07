@@ -1,109 +1,114 @@
-# Introduction
+# BTC Lottery
 
-## Bitcoin wallets and private keyspace
+An educational demonstration of the practical impossibility of guessing Bitcoin private keys.
 
-Your Bitcoin wallet is derived from a single number. This number is used to generate a private key, public key, and
-wallet address. If someone else could guess this number, they could sign transactions using your private key and control
-your funds.
+## The Premise
 
-The only thing protecting your Bitcoin is the sheer size of the private key space, which is incredibly large. As humans,
-it's very difficult for us to reason about numbers beyond a certain size, so I find comparisons and practical
-applications are helpful.
+Bitcoin wallets are derived from a single number. If you could guess that number, you'd control the wallet. This program attempts exactly that: generate random wallet credentials and check if any match existing funded addresses.
 
-If we consider storing the entire Bitcoin key space, which comprises all possible Bitcoin addresses, the total number is
-around 2^160, amounting to approximately 1.46×10^48 unique addresses. Assuming each address requires an average size of
-34 bytes, the total file size to represent the entire key space would be 34 bytes × 1.46×10^48 addresses, or
-approximately 4.96×10^49 bytes.
+**Spoiler: It won't work.** The keyspace is astronomically large (~2^128 for 12-word mnemonics). To store all possible addresses would require hard drives stacked 4.59×10^25 times the diameter of the Sun.
 
-To store this data using hypothetical 1 billion TB (or 1×10^15 bytes) hard drives, we would need about 4.96×10^34 hard
-drives.
+But it's fun to try.
 
-With the dimensions of a standard 3.5-inch HDD being 5.8 in x 4 in x 0.8 in, the surface area of each hard drive is
-approximately 23.2 square inches. Therefore, with 4.96×10^34 hard drives, the total area covered would be 23.2 square
-inches × 4.96×10^34, which equals approximately 1.15×10^36 square inches.
+## What It Does
 
-Comparing this to the surface area of the Sun, which is about 6.09×10^22 square inches, these hard drives would cover
-the surface of the Sun roughly 1.89×10^13 times.
+1. Generates random BIP39 mnemonics (12 or 24 words)
+2. Derives addresses using standard BIP derivation paths
+3. Checks generated addresses against ~50 million known funded Bitcoin addresses
+4. Logs any matches (there won't be any)
 
-Considering the total height if the hard drives were stacked, with each being approximately 0.8 inches in height, the
-total height of the stack would be 0.8 inches × 4.96×10^34, equaling approximately 3.91×10^34 inches. Given that the
-diameter of the Sun is about 864,575,959 inches, this stack would reach a height approximately 4.59×10^25 times the
-diameter of the Sun.
+## Address Types Generated
 
-Therefore, if the hard drives were layered in such a way that each layer covers the entire surface of the Sun, and
-considering each layer to be 0.8 inches in height, the total height of these layers would be approximately 3.97 x 10^34
-inches. This is about 4.59 x 10^25 times the diameter of the Sun, indicating an immensely tall stack that far exceeds
-the scale of our solar system.
+For each mnemonic, the program derives multiple address types across multiple indexes:
 
-## Practical impossibility of guessing an existing key
+| Type | BIP | Path | Format | Example Prefix |
+|------|-----|------|--------|----------------|
+| P2PKH | BIP44 | `m/44'/0'/0'/0/i` | Legacy | `1...` |
+| P2SH-P2WPKH | BIP49 | `m/49'/0'/0'/0/i` | Wrapped SegWit | `3...` |
+| P2WPKH | BIP84 | `m/84'/0'/0'/0/i` | Native SegWit | `bc1q...` |
+| P2TR | BIP86 | `m/86'/0'/0'/0/i` | Taproot | `bc1p...` |
 
-Because Bitcoin wallets are ultimately derived from a single number, it should be possible to use a computer to guess
-random numbers until it finds one that matches an existing wallet. To do this, we only need a program to do the guessing
-and a list of all existing wallets.
+With default settings (20 indexes), each mnemonic produces **80 addresses** (4 types × 20 indexes).
 
-To decrease the scope of our task, let's limit the private keys to only those that are derived from a 12-word key
-phrase (a common default on most wallets). This removes a large number of keys from the poll of possible keys, making it
-more likely to find an existing one.
+## Performance Optimizations
 
-And to make this worth our time, we'll focus only on wallets that have Bitcoin in them... which would effectively give
-us control of the corresponding wallet. For this portion, we'll use the dump of all wallets and their balances as
-published by https://blockchair.com/dumps.
+- **Bloom Filter**: All ~50M addresses loaded into memory (~75MB) for O(1) negative lookups, eliminating 99%+ of database queries
+- **Concurrent Workers**: Configurable worker pool (default 50) with independent local state
+- **Batch Processing**: Addresses checked in batches using PostgreSQL `ANY()` array queries
+- **Cursor Pagination**: Bloom filter initialization uses keyset pagination instead of slow OFFSET
 
-# Running the binary
+## Quick Start
 
-1. Copy `./build/btc_lottery` into your `$PATH`
-2. Download the latest raw wallet and balances data:
-    ```
-    curl -L -o blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz http://addresses.loyce.club/blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz
-    gunzip blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz
-    ```
-3. Bring up the database:
-    ```shell
-    docker-compose up -d
-    ```
-4. Import the data (go grab a coffee, this will take a while):
-    ```shell
-    sudo docker exec -it btc_lottery-postgres-1 psql -h localhost -U btc -d btc -c "\copy btc_addresses FROM '/blockchair_bitcoin_addresses_and_balance_LATEST.tsv' WITH (FORMAT text, DELIMITER E'\t', HEADER);"
-    ```
-5. Run the lottery using the -v flag to ensure it's working:
-    ```shell
-    btc_lottery -v
-    ```
-6. Once you've verified everything is working as expected, run the application without the verbose flag and enable Pushover notifications so you can be notified when you win the Bitcoin lottery (it's not going to happen):
-    ```shell
-    btc_lottery -pt $PUSHOVER_APPLICATION_TOKEN -pu $PUSHOVER_USER_KEY
-    ```
+```bash
+# 1. Start PostgreSQL
+docker-compose up -d
 
-# Building from source
+# 2. Download address data (~2GB compressed)
+curl -L -o blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz \
+  http://addresses.loyce.club/blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz
+gunzip blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz
 
-First, install dependencies:
+# 3. Import into database (takes several minutes)
+docker exec -it btc_lottery-postgres-1 psql -U btc -d btc -c \
+  "\copy btc_addresses FROM '/blockchair_bitcoin_addresses_and_balance_LATEST.tsv' WITH (FORMAT text, DELIMITER E'\t', HEADER);"
 
-```shell
-go mod download
+# 4. Run
+./build/btc_lottery -v
 ```
 
-Then, make an optimized build:
+## Building
 
-```shell
+```bash
+go mod download
 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o build/btc_lottery btc_lottery.go
 ```
 
-# Sourcing the data
+## CLI Flags
 
-The wallet addresses are sourced from [Blockchair.com's daily dumps](https://blockchair.com/dumps), as they're captured
-by a [proxy site](http://addresses.loyce.club/).
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-w` | 50 | Number of concurrent workers |
+| `-b` | 1000 | Batch size for DB checks |
+| `-i` | 20 | Address indexes per mnemonic (0 to n-1) |
+| `-e` | 128 | Entropy bits: 128 (12 words) or 256 (24 words) |
+| `-c` | 0 | Counter interval for progress logs (0 = disabled) |
+| `-v` | false | Verbose output |
+| `-db` | `postgres://btc:btc@localhost:5432/btc?sslmode=disable` | Database connection string |
+| `-pt` | | Pushover application token |
+| `-pu` | | Pushover user key |
 
-See [this bitcointalk.org thread](https://bitcointalk.org/index.php?topic=5254914.0) for more details on motivations
-and methodology.
+## Running Tests
 
-# Bootstrapping the SQL database
+```bash
+go test -v btc_lottery.go btc_lottery_test.go
+```
 
-Instead of the docker database, you can bootstrap your own database like so:
+Tests verify derivation correctness against known BIP test vectors using the standard "abandon" mnemonic.
 
-* run `persist/initdb/init.psql.sql` for schema and index generation.
-* download and import the latest data:
-  ```shell
-  curl -L -o blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz http://addresses.loyce.club/blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz
-  gunzip blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz
-  psql -h localhost -U btc -d btc -c "\copy btc_addresses FROM '/blockchair_bitcoin_addresses_and_balance_LATEST.tsv' WITH (FORMAT text, DELIMITER E'\t', HEADER);"
-  ```
+## Data Source
+
+Address data sourced from [Blockchair.com dumps](https://blockchair.com/dumps) via [addresses.loyce.club](http://addresses.loyce.club/).
+
+## Database Schema
+
+```sql
+-- Known funded addresses (~50M rows)
+CREATE TABLE btc_addresses (
+    address TEXT PRIMARY KEY,
+    balance BIGINT
+);
+
+-- Any matches found (will remain empty)
+CREATE TABLE wallets (
+    address     TEXT PRIMARY KEY,
+    mnemonic    TEXT NOT NULL,
+    private_key TEXT NOT NULL,
+    public_key  TEXT NOT NULL,
+    addr_type   TEXT,
+    found_at    TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+## License
+
+Educational use. Don't actually expect to find anything.
