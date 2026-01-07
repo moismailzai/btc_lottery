@@ -44,6 +44,9 @@ var (
 
 	// Bloom filter for fast negative lookups
 	addressBloomFilter *bloom.BloomFilter
+
+	// Mutex for matches.log file writes
+	matchesFileMutex sync.Mutex
 )
 
 // addressInfo holds all data for a generated address
@@ -158,7 +161,7 @@ func generateAddressesFromMnemonic() ([]addressInfo, error) {
 			return nil, fmt.Errorf("deriving BIP44 child key at index %d: %w", idx, err)
 		}
 
-		privKey, _ := btcec.PrivKeyFromBytes(p2pkhChildKey.Key)
+		privKey, _ := btcec.PrivKeyFromBytes(p2pkhChildKey.Key) // Second return is public key, not error
 		wif, err := btcutil.NewWIF(privKey, &chaincfg.MainNetParams, true)
 		if err != nil {
 			return nil, fmt.Errorf("creating WIF: %w", err)
@@ -186,7 +189,7 @@ func generateAddressesFromMnemonic() ([]addressInfo, error) {
 			return nil, fmt.Errorf("deriving BIP84 child key at index %d: %w", idx, err)
 		}
 
-		privKey84, _ := btcec.PrivKeyFromBytes(p2wpkhChildKey.Key)
+		privKey84, _ := btcec.PrivKeyFromBytes(p2wpkhChildKey.Key) // Second return is public key, not error
 		wif84, err := btcutil.NewWIF(privKey84, &chaincfg.MainNetParams, true)
 		if err != nil {
 			return nil, fmt.Errorf("creating WIF for BIP84: %w", err)
@@ -329,19 +332,22 @@ func logMatch(data addressInfo) {
 	fmt.Println(msg)
 	fmt.Println(strings.Repeat("=", 60))
 
-	// Append to a file
+	// Append to a file (mutex-protected for concurrent workers)
+	matchesFileMutex.Lock()
 	file, err := os.OpenFile("matches.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
+		matchesFileMutex.Unlock()
 		log.Printf("Error opening matches.log: %v", err)
 		return
 	}
-	defer file.Close()
 
 	timestamp := time.Now().Format(time.RFC3339)
 	logLine := fmt.Sprintf("[%s] %s\n", timestamp, msg)
 	if _, err := file.WriteString(logLine); err != nil {
 		log.Printf("Error writing to matches.log: %v", err)
 	}
+	file.Close()
+	matchesFileMutex.Unlock()
 
 	// Send push notification for matches
 	if *pushoverNotifications && *pushoverToken != "" && *pushoverUser != "" {
