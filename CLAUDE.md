@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Go application that generates random Bitcoin wallets (from 12 or 24-word BIP39 mnemonics) and checks if they match any existing funded addresses stored in a PostgreSQL database. It's an educational demonstration of the practical impossibility of guessing Bitcoin private keys.
+This is a Go application that generates random Bitcoin wallets (from 12 or 24-word BIP39 mnemonics) and checks if they match any existing funded addresses loaded into memory. It's an educational demonstration of the practical impossibility of guessing Bitcoin private keys.
+
+**Performance**: ~350,000 addresses/sec with 32 workers on AMD Ryzen 9 9950X3D.
 
 ## Build Commands
 
@@ -12,56 +14,101 @@ This is a Go application that generates random Bitcoin wallets (from 12 or 24-wo
 # Install dependencies
 go mod download
 
-# Build optimized binary for Linux
-GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o build/btc_lottery btc_lottery.go
+# Build binary
+go build -o build/btc_lottery ./cmd/btc_lottery
 
-# Run tests (if any)
-go test ./...
+# Build optimized binary
+go build -ldflags="-s -w" -o build/btc_lottery ./cmd/btc_lottery
+
+# Build with GPU support (requires CUDA)
+go build -tags cuda -o build/btc_lottery_gpu ./cmd/btc_lottery
+
+# Run tests
+go test ./internal/...
 ```
 
 ## Running the Application
 
 ```shell
-# Start PostgreSQL database
-docker-compose up -d
+# Download address data
+curl -L -o addresses.tsv.gz http://addresses.loyce.club/blockchair_bitcoin_addresses_and_balance_LATEST.tsv.gz
+gunzip addresses.tsv.gz
 
-# Import address data (required before first run)
-docker exec -it btc_lottery-postgres-1 psql -h localhost -U btc -d btc -c "\copy btc_addresses FROM '/blockchair_bitcoin_addresses_and_balance_LATEST.tsv' WITH (FORMAT text, DELIMITER E'\t', HEADER);"
+# Run with progress reporting every 5 seconds
+./build/btc_lottery -addresses addresses.tsv -c 5
 
-# Run with verbose output for debugging
-./build/btc_lottery -v
+# Run with more workers
+./build/btc_lottery -addresses addresses.tsv -w 50 -c 5
 
 # Run with Pushover notifications
-./build/btc_lottery -pt $PUSHOVER_APPLICATION_TOKEN -pu $PUSHOVER_USER_KEY
+./build/btc_lottery -addresses addresses.tsv -pt $PUSHOVER_TOKEN -pu $PUSHOVER_USER
 ```
 
 ## Architecture
 
-Single-file Go application (`btc_lottery.go`) with concurrent worker pattern:
+Multi-package Go application with concurrent worker pattern:
 
-- **Main goroutine**: Sets up database connection, initializes Bloom filter, spawns workers, handles graceful shutdown
-- **Bloom filter**: All ~50M addresses loaded into memory for O(1) negative lookups, eliminating 99%+ of DB queries
-- **Worker goroutines**: Each worker independently generates mnemonics, derives addresses, and batch-checks against the Bloom filter/database
-- **Database**: PostgreSQL stores known Bitcoin addresses (`btc_addresses`) and any matches found (`wallets`)
+```
+cmd/btc_lottery/     - Main entry point
+├── main.go          - CLI parsing, orchestration
+├── run_cpu.go       - CPU worker management
+└── run_gpu.go       - GPU worker management (build tag: cuda)
 
-Key flow:
-1. Generate entropy → BIP39 mnemonic (128-bit/12-word default, or 256-bit/24-word with `-e 256`)
-2. Derive master key using correct BIP paths:
-   - BIP44 (`m/44'/0'/0'/0/index`) for P2PKH (legacy "1...") addresses
-   - BIP49 (`m/49'/0'/0'/0/index`) for P2SH-P2WPKH (wrapped segwit "3...") addresses
-   - BIP84 (`m/84'/0'/0'/0/index`) for P2WPKH (native segwit "bc1q...") addresses
-3. Generate addresses for multiple indexes (default 0-19, configurable with `-i`)
-4. Check addresses against Bloom filter first (fast rejection)
-5. Only query database for Bloom filter positives (rare)
-6. Log and store any matches found
+internal/
+├── lookup/          - In-memory address hash set
+│   ├── hashset.go   - Sorted hash array with binary search
+│   └── loader.go    - TSV file loader
+└── worker/          - Worker implementations
+    ├── interface.go - Common types (Match, Stats, Config)
+    ├── cpu_worker.go- CPU-based address generation
+    └── gpu_worker.go- GPU-accelerated (CUDA)
 
-## Database Schema
+gpu/                 - Optional GPU support
+├── cuda/            - CUDA kernels (.cu files)
+├── gtable/          - Precomputed EC points generator
+└── wrapper/         - Go-CUDA interface
+```
 
-Defined in `persist/initdb/init.psql.sql`:
-- `btc_addresses`: Known Bitcoin addresses with balances (imported from Blockchair dumps)
-- `wallets`: Stores any matched wallet credentials (with addr_type and timestamp)
-- `misses`: Optional table for recording non-matches (debug mode only)
+### Key Components
+
+- **AddressHashSet**: Sorted 8-byte hash prefixes for O(log n) binary search (~400MB for 50M addresses)
+- **CPUWorker**: Uses btcd's hdkeychain for fast BIP32 derivation (48x faster than go-bip32)
+- **Match logging**: Writes to `matches.log` with mutex protection
+
+### Key Flow
+
+1. Load addresses from TSV into sorted hash set
+2. Spawn N worker goroutines
+3. Each worker:
+   - Generate entropy → BIP39 mnemonic
+   - PBKDF2 → seed → master key
+   - Cache hardened paths (m/44'/0'/0'/0, m/49'/0'/0'/0, m/84'/0'/0'/0, m/86'/0'/0'/0)
+   - Derive 20 addresses per path type (80 total)
+   - Binary search each address in hash set
+   - Report matches
+
+### Address Types
+
+- BIP44 (`m/44'/0'/0'/0/i`): P2PKH (legacy "1...")
+- BIP49 (`m/49'/0'/0'/0/i`): P2SH-P2WPKH (wrapped segwit "3...")
+- BIP84 (`m/84'/0'/0'/0/i`): P2WPKH (native segwit "bc1q...")
+- BIP86 (`m/86'/0'/0'/0/i`): P2TR (taproot "bc1p...")
 
 ## CLI Flags
 
-Key flags: `-w` (workers), `-b` (batch size), `-i` (address indexes per mnemonic), `-e` (entropy bits: 128 or 256), `-v` (verbose), `-db` (connection string), `-pt`/`-pu` (Pushover tokens)
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-addresses` | | Path to TSV file (required) |
+| `-w` | 32 | Number of workers |
+| `-i` | 20 | Address indexes per mnemonic |
+| `-e` | 128 | Entropy bits (128 or 256) |
+| `-c` | 0 | Progress interval in seconds |
+| `-v` | false | Verbose output |
+| `-gpu` | false | Enable GPU acceleration |
+| `-pt`/`-pu` | | Pushover tokens |
+
+## Performance Notes
+
+The main bottleneck is PBKDF2 (~0.54ms per mnemonic). BIP32 derivation using hdkeychain is very fast (~0.075ms for 4 hardened levels).
+
+With 32 workers: ~4,400 mnemonics/sec × 80 addresses = ~350,000 addresses/sec.

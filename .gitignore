@@ -1,3 +1,20 @@
+# IDE
 .idea/
+
+# Data files
 persist/blockchair_bitcoin_addresses_and_balance_LATEST.tsv
 persist/postgresql
+*.tsv
+!testdata/*.tsv
+
+# Build artifacts
+build/
+/btc_lottery
+*.exe
+
+# GPU generated files (GTable binaries - can be regenerated with gengtable)
+gpu/cuda/*.bin
+
+# Logs
+matches.log
+*.log
