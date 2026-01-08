@@ -71,7 +71,7 @@ gpu/                 - Optional GPU support
 
 ### Key Components
 
-- **AddressHashSet**: Sorted 8-byte hash prefixes for O(log n) binary search (~400MB for 50M addresses)
+- **AddressHashSet**: Sorted 8-byte hash prefixes for O(log n) binary search (~2.5GB total for 50M addresses: 400MB hashes + 1.7GB full address strings + overhead)
 - **CPUWorker**: Uses btcd's hdkeychain for fast BIP32 derivation (48x faster than go-bip32)
 - **Match logging**: Writes to `matches.log` with mutex protection
 

@@ -15,9 +15,6 @@ type LoadConfig struct {
 	// Path to TSV file (address\tbalance format)
 	FilePath string
 
-	// Minimum balance to include (0 = all addresses)
-	MinBalance int64
-
 	// Progress callback interval (0 = no progress)
 	ProgressInterval time.Duration
 
@@ -85,12 +82,6 @@ func LoadFromReader(r io.Reader, totalSize int64, cfg LoadConfig) (*AddressHashS
 			continue
 		}
 
-		// Optional balance filtering
-		if cfg.MinBalance > 0 && len(parts) >= 2 {
-			// Parse balance if needed
-			// For now, skip balance filtering for simplicity
-		}
-
 		batch = append(batch, address)
 
 		// Flush batch
@@ -135,11 +126,4 @@ func LoadFromReader(r io.Reader, totalSize int64, cfg LoadConfig) (*AddressHashS
 		hashSet.TotalAddresses(), elapsed.Round(time.Millisecond), memMB)
 
 	return hashSet, nil
-}
-
-// LoadFromDatabase loads addresses from PostgreSQL (legacy support).
-// This is kept for testing/comparison but not used in production.
-func LoadFromDatabase(connStr string) (*AddressHashSet, error) {
-	// Import would create circular dependency, so this is a stub
-	return nil, fmt.Errorf("database loading not implemented in new architecture; use TSV file")
 }

@@ -43,9 +43,6 @@ var (
 	pushoverToken = flag.String("pt", "", "Pushover application token")
 	pushoverUser  = flag.String("pu", "", "Pushover user key")
 
-	// Legacy database support (for migration)
-	dbConn = flag.String("db", "", "Database connection string (legacy, use -addresses instead)")
-
 	// Mutex for file writes
 	matchesFileMutex sync.Mutex
 )
@@ -71,8 +68,8 @@ func main() {
 		log.Fatal("Entropy bits must be 128 (12 words) or 256 (24 words)")
 	}
 
-	if *addressFile == "" && *dbConn == "" {
-		log.Fatal("Must specify -addresses <path-to-tsv> or -db <connection-string>")
+	if *addressFile == "" {
+		log.Fatal("Must specify -addresses <path-to-tsv>")
 	}
 
 	mnemonicWords := *entropyBits / 32 * 3
@@ -86,17 +83,13 @@ func main() {
 	var hashSet *lookup.AddressHashSet
 	var err error
 
-	if *addressFile != "" {
-		log.Printf("Loading addresses from %s...", *addressFile)
-		hashSet, err = lookup.LoadFromTSV(lookup.LoadConfig{
-			FilePath:         *addressFile,
-			ProgressInterval: 5 * time.Second,
-		})
-		if err != nil {
-			log.Fatalf("Failed to load addresses: %v", err)
-		}
-	} else if *dbConn != "" {
-		log.Fatal("Database loading not supported in v2. Export addresses to TSV first.")
+	log.Printf("Loading addresses from %s...", *addressFile)
+	hashSet, err = lookup.LoadFromTSV(lookup.LoadConfig{
+		FilePath:         *addressFile,
+		ProgressInterval: 5 * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("Failed to load addresses: %v", err)
 	}
 
 	log.Printf("Loaded %d addresses (%.1f MB memory)",
