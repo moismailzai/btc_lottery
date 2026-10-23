@@ -16,7 +16,7 @@ But it's fun to try.
 |--------|-------|
 | Throughput | **~350,000 addresses/sec** (32 workers) |
 | Memory usage | ~2.5 GB (for 50M addresses) |
-| Time per mnemonic | ~2.3ms (80 addresses) |
+| Time per mnemonic | ~0.23ms (80 addresses) |
 
 Tested on AMD Ryzen 9 9950X3D with 94GB RAM.
 
